@@ -81,11 +81,135 @@ class KernelBuilder:
             slots.append(("alu", (op1, tmp1, val_hash_addr, self.scratch_const(val1))))
             slots.append(("alu", (op3, tmp2, val_hash_addr, self.scratch_const(val3))))
             slots.append(("alu", (op2, val_hash_addr, tmp1, tmp2)))
-            slots.append(("debug", ("compare", val_hash_addr, (round, i, "hash_stage", hi))))
+            slots.append(
+                ("debug", ("compare", val_hash_addr, (round, i, "hash_stage", hi)))
+            )
 
         return slots
 
     def build_kernel(
+        self, forest_height: int, n_nodes: int, batch_size: int, rounds: int
+    ):
+        """
+        Like reference_kernel2 but building actual instructions.
+        Scalar implementation using only scalar ALU and load/store.
+        """
+        # This is required to match with the yield in reference_kernel2.
+        self.instrs.append({"flow": [("pause",)]})
+
+        # Precomputing some pointer addresses from the known memory layout.
+        forest_values_p_const = 7
+        inp_indices_p_const = forest_values_p_const + n_nodes
+        inp_values_p_const = inp_indices_p_const + batch_size
+
+        instructions = []
+
+        # First, load all initial accumulators into registers. Note that
+        # registers all begin initialized to zero.
+        zero = self.alloc_scratch("zero", 1)
+        eight = self.alloc_scratch("eight", 1)
+        sixteen = self.alloc_scratch("sixteen", 1)
+        acc_lo = self.alloc_scratch("tmp1", 1)
+        acc_hi = self.alloc_scratch("tmp2", 1)
+        tree_node_val_zero = self.alloc_scratch("tmp3", 1)
+        instructions.append(
+            {
+                "load": [
+                    ("const", tree_node_val_zero, forest_values_p_const),
+                    ("const", acc_lo, inp_values_p_const),
+                ],
+                "flow": [
+                    ("add_imm", eight, zero, 8),
+                ],
+            }
+        )
+        instructions.append(
+            {
+                "load": [
+                    ("load", tree_node_val_zero, tree_node_val_zero),
+                ],
+                "alu": [
+                    ("+", sixteen, eight, eight),
+                    ("+", acc_hi, eight, acc_lo),
+                ],
+            }
+        )
+
+        # Start loading initial accumulator values into registers.
+        for i in range(8):
+            self.alloc_scratch(f"acc_{2*i}", 8)
+            self.alloc_scratch(f"acc_{2*i+1}", 8)
+            self.alloc_scratch(f"index_{2*i}", 8)
+            self.alloc_scratch(f"index_{2*i+1}", 8)
+            self.alloc_scratch(f"node_{2*i}", 8)
+            self.alloc_scratch(f"node_{2*i+1}", 8)
+            instructions.append(
+                {
+                    "load": [
+                        ("vload", self.scratch[f"acc_{2*i}"], acc_lo),
+                        ("vload", self.scratch[f"acc_{2*i+1}"], acc_hi),
+                    ],
+                    "alu": [
+                        ("+", acc_lo, acc_lo, sixteen),
+                        ("+", acc_hi, acc_hi, sixteen),
+                    ],
+                    # Note that the initial indexes are all zero, and therefore
+                    # the initial node values are also all the same, so we can
+                    # vbroadcast both the indexes and node values.
+                    "valu": [
+                        ("vbroadcast", self.scratch[f"index_{2*i}"], zero),
+                        ("vbroadcast", self.scratch[f"index_{2*i+1}"], zero),
+                        ("vbroadcast", self.scratch[f"node_{2*i}"], tree_node_val_zero),
+                        (
+                            "vbroadcast",
+                            self.scratch[f"node_{2*i+1}"],
+                            tree_node_val_zero,
+                        ),
+                    ],
+                }
+            )
+            instructions.append(
+                {
+                    "debug": [
+                        (
+                            "vcompare",
+                            self.scratch[f"acc_{2*i}"],
+                            [(0, 16 * i + n, "val") for n in range(8)],
+                        ),
+                        (
+                            "vcompare",
+                            self.scratch[f"acc_{2*i+1}"],
+                            [(0, 16 * i + 8 + n, "val") for n in range(8)],
+                        ),
+                        (
+                            "vcompare",
+                            self.scratch[f"index_{2*i}"],
+                            [(0, 16 * i + n, "idx") for n in range(8)],
+                        ),
+                        (
+                            "vcompare",
+                            self.scratch[f"index_{2*i+1}"],
+                            [(0, 16 * i + 8 + n, "idx") for n in range(8)],
+                        ),
+                        (
+                            "vcompare",
+                            self.scratch[f"node_{2*i}"],
+                            [(0, 16 * i + n, "node_val") for n in range(8)],
+                        ),
+                        (
+                            "vcompare",
+                            self.scratch[f"node_{2*i+1}"],
+                            [(0, 16 * i + 8 + n, "node_val") for n in range(8)],
+                        ),
+                    ]
+                }
+            )
+
+        self.instrs.extend(instructions)
+        # Required to match with the yield in reference_kernel2
+        self.instrs.append({"flow": [("pause",)]})
+
+    def build_kernel_original(
         self, forest_height: int, n_nodes: int, batch_size: int, rounds: int
     ):
         """
@@ -135,17 +259,25 @@ class KernelBuilder:
             for i in range(batch_size):
                 i_const = self.scratch_const(i)
                 # idx = mem[inp_indices_p + i]
-                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
+                body.append(
+                    ("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
+                )
                 body.append(("load", ("load", tmp_idx, tmp_addr)))
                 body.append(("debug", ("compare", tmp_idx, (round, i, "idx"))))
                 # val = mem[inp_values_p + i]
-                body.append(("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const)))
+                body.append(
+                    ("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
+                )
                 body.append(("load", ("load", tmp_val, tmp_addr)))
                 body.append(("debug", ("compare", tmp_val, (round, i, "val"))))
                 # node_val = mem[forest_values_p + idx]
-                body.append(("alu", ("+", tmp_addr, self.scratch["forest_values_p"], tmp_idx)))
+                body.append(
+                    ("alu", ("+", tmp_addr, self.scratch["forest_values_p"], tmp_idx))
+                )
                 body.append(("load", ("load", tmp_node_val, tmp_addr)))
-                body.append(("debug", ("compare", tmp_node_val, (round, i, "node_val"))))
+                body.append(
+                    ("debug", ("compare", tmp_node_val, (round, i, "node_val")))
+                )
                 # val = myhash(val ^ node_val)
                 body.append(("alu", ("^", tmp_val, tmp_val, tmp_node_val)))
                 body.extend(self.build_hash(tmp_val, tmp1, tmp2, round, i))
@@ -162,10 +294,14 @@ class KernelBuilder:
                 body.append(("flow", ("select", tmp_idx, tmp1, tmp_idx, zero_const)))
                 body.append(("debug", ("compare", tmp_idx, (round, i, "wrapped_idx"))))
                 # mem[inp_indices_p + i] = idx
-                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
+                body.append(
+                    ("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
+                )
                 body.append(("store", ("store", tmp_addr, tmp_idx)))
                 # mem[inp_values_p + i] = val
-                body.append(("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const)))
+                body.append(
+                    ("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
+                )
                 body.append(("store", ("store", tmp_addr, tmp_val)))
 
         body_instrs = self.build(body)
@@ -173,7 +309,9 @@ class KernelBuilder:
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})
 
+
 BASELINE = 147734
+
 
 def do_kernel_test(
     forest_height: int,
@@ -212,7 +350,7 @@ def do_kernel_test(
         assert (
             machine.mem[inp_values_p : inp_values_p + len(inp.values)]
             == ref_mem[inp_values_p : inp_values_p + len(inp.values)]
-        ), f"Incorrect result on round {i}"
+        ), f"Incorrect result on pause {i+1}"
         inp_indices_p = ref_mem[5]
         if prints:
             print(machine.mem[inp_indices_p : inp_indices_p + len(inp.indices)])
