@@ -43,20 +43,9 @@ class KernelBuilder:
         self.scratch = {}
         self.scratch_debug = {}
         self.scratch_ptr = 0
-        self.const_map = {}
 
     def debug_info(self):
         return DebugInfo(scratch_map=self.scratch_debug)
-
-    def build(self, slots: list[tuple[Engine, tuple]], vliw: bool = False):
-        # Simple slot packing that just uses one slot per instruction bundle
-        instrs = []
-        for engine, slot in slots:
-            instrs.append({engine: [slot]})
-        return instrs
-
-    def add(self, engine, slot):
-        self.instrs.append({engine: [slot]})
 
     def alloc_scratch(self, name=None, length=1):
         addr = self.scratch_ptr
@@ -66,13 +55,6 @@ class KernelBuilder:
         self.scratch_ptr += length
         assert self.scratch_ptr <= SCRATCH_SIZE, "Out of scratch space"
         return addr
-
-    def scratch_const(self, val, name=None):
-        if val not in self.const_map:
-            addr = self.alloc_scratch(name)
-            self.add("load", ("const", addr, val))
-            self.const_map[val] = addr
-        return self.const_map[val]
 
     def build_hash(self, val_hash_addr, tmp1, tmp2, round, i):
         slots = []
@@ -205,9 +187,62 @@ class KernelBuilder:
                 }
             )
 
+        for r in range(rounds):
+            pass
+
         self.instrs.extend(instructions)
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})
+
+class KernelBuilderOriginal:
+    def __init__(self):
+        self.instrs = []
+        self.scratch = {}
+        self.scratch_debug = {}
+        self.scratch_ptr = 0
+        self.const_map = {}
+
+    def debug_info(self):
+        return DebugInfo(scratch_map=self.scratch_debug)
+
+    def build(self, slots: list[tuple[Engine, tuple]], vliw: bool = False):
+        # Simple slot packing that just uses one slot per instruction bundle
+        instrs = []
+        for engine, slot in slots:
+            instrs.append({engine: [slot]})
+        return instrs
+
+    def add(self, engine, slot):
+        self.instrs.append({engine: [slot]})
+
+    def alloc_scratch(self, name=None, length=1):
+        addr = self.scratch_ptr
+        if name is not None:
+            self.scratch[name] = addr
+            self.scratch_debug[addr] = (name, length)
+        self.scratch_ptr += length
+        assert self.scratch_ptr <= SCRATCH_SIZE, "Out of scratch space"
+        return addr
+
+    def scratch_const(self, val, name=None):
+        if val not in self.const_map:
+            addr = self.alloc_scratch(name)
+            self.add("load", ("const", addr, val))
+            self.const_map[val] = addr
+        return self.const_map[val]
+
+    def build_hash(self, val_hash_addr, tmp1, tmp2, round, i):
+        slots = []
+
+        for hi, (op1, val1, op2, op3, val3) in enumerate(HASH_STAGES):
+            slots.append(("alu", (op1, tmp1, val_hash_addr, self.scratch_const(val1))))
+            slots.append(("alu", (op3, tmp2, val_hash_addr, self.scratch_const(val3))))
+            slots.append(("alu", (op2, val_hash_addr, tmp1, tmp2)))
+            slots.append(
+                ("debug", ("compare", val_hash_addr, (round, i, "hash_stage", hi)))
+            )
+
+        return slots
 
     def build_kernel_original(
         self, forest_height: int, n_nodes: int, batch_size: int, rounds: int
@@ -308,7 +343,6 @@ class KernelBuilder:
         self.instrs.extend(body_instrs)
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})
-
 
 BASELINE = 147734
 
