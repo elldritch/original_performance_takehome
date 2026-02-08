@@ -56,19 +56,6 @@ class KernelBuilder:
         assert self.scratch_ptr <= SCRATCH_SIZE, "Out of scratch space"
         return addr
 
-    def build_hash(self, val_hash_addr, tmp1, tmp2, round, i):
-        slots = []
-
-        for hi, (op1, val1, op2, op3, val3) in enumerate(HASH_STAGES):
-            slots.append(("alu", (op1, tmp1, val_hash_addr, self.scratch_const(val1))))
-            slots.append(("alu", (op3, tmp2, val_hash_addr, self.scratch_const(val3))))
-            slots.append(("alu", (op2, val_hash_addr, tmp1, tmp2)))
-            slots.append(
-                ("debug", ("compare", val_hash_addr, (round, i, "hash_stage", hi)))
-            )
-
-        return slots
-
     def build_kernel(
         self, forest_height: int, n_nodes: int, batch_size: int, rounds: int
     ):
@@ -89,11 +76,23 @@ class KernelBuilder:
         # First, load all initial accumulators into registers. Note that
         # registers all begin initialized to zero.
         zero = self.alloc_scratch("zero", 1)
+        one = self.alloc_scratch("one", 1)
+        three = self.alloc_scratch("three", 1)
+        five = self.alloc_scratch("five", 1)
         eight = self.alloc_scratch("eight", 1)
+        nine = self.alloc_scratch("nine", 1)
+        twelve = self.alloc_scratch("twelve", 1)
         sixteen = self.alloc_scratch("sixteen", 1)
+        nineteen = self.alloc_scratch("nineteen", 1)
         acc_lo = self.alloc_scratch("tmp1", 1)
         acc_hi = self.alloc_scratch("tmp2", 1)
         tree_node_val_zero = self.alloc_scratch("tmp3", 1)
+        hash_stage0_val = self.alloc_scratch("hash_stage0_val", 1)
+        hash_stage1_val = self.alloc_scratch("hash_stage1_val", 1)
+        hash_stage2_val = self.alloc_scratch("hash_stage2_val", 1)
+        hash_stage3_val = self.alloc_scratch("hash_stage3_val", 1)
+        hash_stage4_val = self.alloc_scratch("hash_stage4_val", 1)
+        hash_stage5_val = self.alloc_scratch("hash_stage5_val", 1)
         instructions.append(
             {
                 "load": [
@@ -109,10 +108,14 @@ class KernelBuilder:
             {
                 "load": [
                     ("load", tree_node_val_zero, tree_node_val_zero),
+                    ("const", three, 3),
                 ],
                 "alu": [
                     ("+", sixteen, eight, eight),
                     ("+", acc_hi, eight, acc_lo),
+                ],
+                "flow": [
+                    ("add_imm", one, zero, 1),
                 ],
             }
         )
@@ -125,31 +128,66 @@ class KernelBuilder:
             self.alloc_scratch(f"index_{2*i+1}", 8)
             self.alloc_scratch(f"node_{2*i}", 8)
             self.alloc_scratch(f"node_{2*i+1}", 8)
-            instructions.append(
-                {
-                    "load": [
-                        ("vload", self.scratch[f"acc_{2*i}"], acc_lo),
-                        ("vload", self.scratch[f"acc_{2*i+1}"], acc_hi),
-                    ],
-                    "alu": [
-                        ("+", acc_lo, acc_lo, sixteen),
-                        ("+", acc_hi, acc_hi, sixteen),
-                    ],
-                    # Note that the initial indexes are all zero, and therefore
-                    # the initial node values are also all the same, so we can
-                    # vbroadcast both the indexes and node values.
-                    "valu": [
-                        ("vbroadcast", self.scratch[f"index_{2*i}"], zero),
-                        ("vbroadcast", self.scratch[f"index_{2*i+1}"], zero),
-                        ("vbroadcast", self.scratch[f"node_{2*i}"], tree_node_val_zero),
+            instruction = {
+                "load": [
+                    ("vload", self.scratch[f"acc_{2*i}"], acc_lo),
+                    ("vload", self.scratch[f"acc_{2*i+1}"], acc_hi),
+                ],
+                "alu": [
+                    ("+", acc_lo, acc_lo, sixteen),
+                    ("+", acc_hi, acc_hi, sixteen),
+                ],
+                # Note that the initial indexes are all zero, and therefore
+                # the initial node values are also all the same, so we can
+                # vbroadcast both the indexes and node values.
+                "valu": [
+                    ("vbroadcast", self.scratch[f"index_{2*i}"], zero),
+                    ("vbroadcast", self.scratch[f"index_{2*i+1}"], zero),
+                    ("vbroadcast", self.scratch[f"node_{2*i}"], tree_node_val_zero),
+                    (
+                        "vbroadcast",
+                        self.scratch[f"node_{2*i+1}"],
+                        tree_node_val_zero,
+                    ),
+                ],
+            }
+
+            # This is a very hacky way of hijacking some spare slots to
+            # initialize some more constants (specifically, the hashing
+            # constants).
+            if i == 0:
+                instruction["alu"].extend(
+                    [
                         (
-                            "vbroadcast",
-                            self.scratch[f"node_{2*i+1}"],
-                            tree_node_val_zero,
+                            "+",
+                            nine,
+                            one,
+                            eight,
                         ),
-                    ],
-                }
-            )
+                        (
+                            "+",
+                            nineteen,
+                            three,
+                            sixteen,
+                        ),
+                    ]
+                )
+                instruction["flow"] = [("add_imm", five, zero, 5)]
+            if i == 1:
+                instruction["alu"].append(("+", twelve, three, nine))
+                instruction["flow"] = [("add_imm", hash_stage0_val, zero, 0x7ED55D16)]
+            if i == 2:
+                instruction["flow"] = [("add_imm", hash_stage1_val, zero, 0xC761C23C)]
+            if i == 3:
+                instruction["flow"] = [("add_imm", hash_stage2_val, zero, 0x165667B1)]
+            if i == 4:
+                instruction["flow"] = [("add_imm", hash_stage3_val, zero, 0xD3A2646C)]
+            if i == 5:
+                instruction["flow"] = [("add_imm", hash_stage4_val, zero, 0xFD7046C5)]
+            if i == 6:
+                instruction["flow"] = [("add_imm", hash_stage5_val, zero, 0xB55A4F09)]
+
+            instructions.append(instruction)
             instructions.append(
                 {
                     "debug": [
@@ -193,6 +231,7 @@ class KernelBuilder:
         self.instrs.extend(instructions)
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})
+
 
 class KernelBuilderOriginal:
     def __init__(self):
@@ -343,6 +382,7 @@ class KernelBuilderOriginal:
         self.instrs.extend(body_instrs)
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})
+
 
 BASELINE = 147734
 
