@@ -166,8 +166,6 @@ class Machine:
                 f'{{"name": "process_name", "ph": "M", "pid": {ci}, "tid": 0, "args": {{"name":"Core {ci}"}}}},\n'
             )
             for name, limit in SLOT_LIMITS.items():
-                if name == "debug":
-                    continue
                 for i in range(limit):
                     tid_counter += 1
                     self.trace.write(
@@ -379,6 +377,8 @@ class Machine:
                         assert res == ref, (
                             f"{res} != {ref} for {keys} at pc={core.pc} loc={loc}"
                         )
+                    elif slot[0] == "comment":
+                        self.trace_slot(core, slot, "debug", 0)
                 continue
             assert len(slots) <= SLOT_LIMITS[name]
             for i, slot in enumerate(slots):

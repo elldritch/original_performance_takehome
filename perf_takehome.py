@@ -257,6 +257,9 @@ class Tests(unittest.TestCase):
     def test_kernel_cycles(self):
         do_kernel_test(10, 16, 256)
 
+    def test_kernel_mem_inspect(self):
+        do_kernel_test(10, 16, 256, trace=True, prints=True)
+
 
 # To run all the tests:
 #    python perf_takehome.py
