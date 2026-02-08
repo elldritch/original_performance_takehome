@@ -78,21 +78,33 @@ class KernelBuilder:
         zero = self.alloc_scratch("zero", 1)
         one = self.alloc_scratch("one", 1)
         three = self.alloc_scratch("three", 1)
+        three_v = self.alloc_scratch("three_v", 8)
         five = self.alloc_scratch("five", 1)
+        five_v = self.alloc_scratch("five_v", 8)
         eight = self.alloc_scratch("eight", 1)
         nine = self.alloc_scratch("nine", 1)
+        nine_v = self.alloc_scratch("nine_v", 8)
         twelve = self.alloc_scratch("twelve", 1)
+        twelve_v = self.alloc_scratch("twelve_v", 8)
         sixteen = self.alloc_scratch("sixteen", 1)
+        sixteen_v = self.alloc_scratch("sixteen_v", 8)
         nineteen = self.alloc_scratch("nineteen", 1)
+        nineteen_v = self.alloc_scratch("nineteen_v", 8)
         acc_lo = self.alloc_scratch("tmp1", 1)
         acc_hi = self.alloc_scratch("tmp2", 1)
         tree_node_val_zero = self.alloc_scratch("tmp3", 1)
-        hash_stage0_val = self.alloc_scratch("hash_stage0_val", 1)
-        hash_stage1_val = self.alloc_scratch("hash_stage1_val", 1)
-        hash_stage2_val = self.alloc_scratch("hash_stage2_val", 1)
-        hash_stage3_val = self.alloc_scratch("hash_stage3_val", 1)
-        hash_stage4_val = self.alloc_scratch("hash_stage4_val", 1)
-        hash_stage5_val = self.alloc_scratch("hash_stage5_val", 1)
+        hash_stage0_const = self.alloc_scratch("hash_stage0_const", 1)
+        hash_stage0_v = self.alloc_scratch("hash_stage0_v", 8)
+        hash_stage1_const = self.alloc_scratch("hash_stage1_const", 1)
+        hash_stage1_v = self.alloc_scratch("hash_stage1_v", 8)
+        hash_stage2_const = self.alloc_scratch("hash_stage2_const", 1)
+        hash_stage2_v = self.alloc_scratch("hash_stage2_v", 8)
+        hash_stage3_const = self.alloc_scratch("hash_stage3_const", 1)
+        hash_stage3_v = self.alloc_scratch("hash_stage3_v", 8)
+        hash_stage4_const = self.alloc_scratch("hash_stage4_const", 1)
+        hash_stage4_v = self.alloc_scratch("hash_stage4_v", 8)
+        hash_stage5_const = self.alloc_scratch("hash_stage5_const", 1)
+        hash_stage5_v = self.alloc_scratch("hash_stage5_v", 8)
         instructions.append(
             {
                 "load": [
@@ -173,19 +185,64 @@ class KernelBuilder:
                     ]
                 )
                 instruction["flow"] = [("add_imm", five, zero, 5)]
+                instruction["valu"].extend(
+                    [
+                        ("vbroadcast", three_v, three),
+                        ("vbroadcast", sixteen_v, sixteen),
+                    ]
+                )
             if i == 1:
                 instruction["alu"].append(("+", twelve, three, nine))
-                instruction["flow"] = [("add_imm", hash_stage0_val, zero, 0x7ED55D16)]
+                instruction["flow"] = [("add_imm", hash_stage0_const, zero, 0x7ED55D16)]
+                instruction["valu"].extend(
+                    [
+                        ("vbroadcast", five_v, five),
+                        ("vbroadcast", nine_v, nine),
+                    ]
+                )
             if i == 2:
-                instruction["flow"] = [("add_imm", hash_stage1_val, zero, 0xC761C23C)]
+                instruction["flow"] = [("add_imm", hash_stage1_const, zero, 0xC761C23C)]
+                instruction["valu"].extend(
+                    [
+                        ("vbroadcast", twelve_v, twelve),
+                        ("vbroadcast", nineteen_v, nineteen),
+                    ]
+                )
             if i == 3:
-                instruction["flow"] = [("add_imm", hash_stage2_val, zero, 0x165667B1)]
+                instruction["flow"] = [("add_imm", hash_stage2_const, zero, 0x165667B1)]
+                instruction["valu"].extend(
+                    [
+                        ("vbroadcast", hash_stage0_v, hash_stage0_const),
+                        ("vbroadcast", hash_stage1_v, hash_stage1_const),
+                    ]
+                )
             if i == 4:
-                instruction["flow"] = [("add_imm", hash_stage3_val, zero, 0xD3A2646C)]
+                instruction["flow"] = [("add_imm", hash_stage3_const, zero, 0xD3A2646C)]
+                instruction["valu"].extend(
+                    [
+                        ("vbroadcast", hash_stage2_v, hash_stage2_const),
+                    ]
+                )
             if i == 5:
-                instruction["flow"] = [("add_imm", hash_stage4_val, zero, 0xFD7046C5)]
+                instruction["flow"] = [("add_imm", hash_stage4_const, zero, 0xFD7046C5)]
+                instruction["valu"].extend(
+                    [
+                        ("vbroadcast", hash_stage3_v, hash_stage3_const),
+                    ]
+                )
             if i == 6:
-                instruction["flow"] = [("add_imm", hash_stage5_val, zero, 0xB55A4F09)]
+                instruction["flow"] = [("add_imm", hash_stage5_const, zero, 0xB55A4F09)]
+                instruction["valu"].extend(
+                    [
+                        ("vbroadcast", hash_stage4_v, hash_stage4_const),
+                    ]
+                )
+            if i == 7:
+                instruction["valu"].extend(
+                    [
+                        ("vbroadcast", hash_stage5_v, hash_stage5_const),
+                    ]
+                )
 
             instructions.append(instruction)
             instructions.append(
@@ -225,8 +282,80 @@ class KernelBuilder:
                 }
             )
 
+        val1 = self.alloc_scratch("val1", 8)
+        val3 = self.alloc_scratch("val3", 8)
+        op1 = self.alloc_scratch("op1", 8)
+        op3 = self.alloc_scratch("op3", 8)
         for r in range(rounds):
-            pass
+            # For each section...
+            for i in range(16):
+                # Calculate vectorized XOR.
+                instructions.append(
+                    {
+                        "valu": [
+                            (
+                                "^",
+                                self.scratch[f"acc_{i}"],
+                                self.scratch[f"acc_{i}"],
+                                self.scratch[f"node_{i}"],
+                            ),
+                            ("vbroadcast", val1, hash_stage0_const),
+                            ("vbroadcast", val3, twelve),
+                        ]
+                    }
+                )
+
+                # Calculate the hash using SIMD.
+                ## Hash stage 1
+                instructions.append(
+                    {
+                        "valu": [
+                            (
+                                "+",
+                                op1,
+                                self.scratch[f"acc_{i}"],
+                                val1,
+                            ),
+                            (
+                                "<<",
+                                op3,
+                                self.scratch[f"acc_{i}"],
+                                val3,
+                            ),
+                        ]
+                    }
+                )
+                instructions.append(
+                    {
+                        "valu": [
+                            (
+                                "+",
+                                self.scratch[f"acc_{i}"],
+                                op1,
+                                op3,
+                            ),
+                        ]
+                    }
+                )
+                instructions.append(
+                    {
+                        "debug": [
+                            (
+                                "vcompare",
+                                self.scratch[f"acc_{i}"],
+                                [(0, 8 * i + n, "hash_stage", 0) for n in range(8)],
+                            ),
+                        ]
+                    }
+                )
+
+                # vswitch on the hashed value.
+
+                # Load the next node value.
+                pass
+
+            # TODO: Do more than one round.
+            break
 
         self.instrs.extend(instructions)
         # Required to match with the yield in reference_kernel2
@@ -469,7 +598,7 @@ class Tests(unittest.TestCase):
     def test_kernel_cycles(self):
         do_kernel_test(10, 16, 256)
 
-    def test_kernel_mem_inspect(self):
+    def test_kernel_prints(self):
         do_kernel_test(10, 16, 256, trace=True, prints=True)
 
 
