@@ -282,10 +282,16 @@ class KernelBuilder:
                 }
             )
 
-        val1 = self.alloc_scratch("val1", 8)
-        val3 = self.alloc_scratch("val3", 8)
-        op1 = self.alloc_scratch("op1", 8)
-        op3 = self.alloc_scratch("op3", 8)
+        op1r = self.alloc_scratch("op1r", 8)
+        op3r = self.alloc_scratch("op3r", 8)
+        VECTORIZED_HASH_STAGES = [
+            ("+", hash_stage0_v, "+", "<<", twelve_v),
+            ("^", hash_stage1_v, "^", ">>", nineteen_v),
+            ("+", hash_stage2_v, "+", "<<", five_v),
+            ("+", hash_stage3_v, "^", "<<", nine_v),
+            ("+", hash_stage4_v, "+", "<<", three_v),
+            ("^", hash_stage5_v, "^", ">>", sixteen_v),
+        ]
         for r in range(rounds):
             # For each section...
             for i in range(16):
@@ -299,63 +305,64 @@ class KernelBuilder:
                                 self.scratch[f"acc_{i}"],
                                 self.scratch[f"node_{i}"],
                             ),
-                            ("vbroadcast", val1, hash_stage0_const),
-                            ("vbroadcast", val3, twelve),
                         ]
                     }
                 )
 
                 # Calculate the hash using SIMD.
-                ## Hash stage 1
-                instructions.append(
-                    {
-                        "valu": [
-                            (
-                                "+",
-                                op1,
-                                self.scratch[f"acc_{i}"],
-                                val1,
-                            ),
-                            (
-                                "<<",
-                                op3,
-                                self.scratch[f"acc_{i}"],
-                                val3,
-                            ),
-                        ]
-                    }
-                )
-                instructions.append(
-                    {
-                        "valu": [
-                            (
-                                "+",
-                                self.scratch[f"acc_{i}"],
-                                op1,
-                                op3,
-                            ),
-                        ]
-                    }
-                )
-                instructions.append(
-                    {
-                        "debug": [
-                            (
-                                "vcompare",
-                                self.scratch[f"acc_{i}"],
-                                [(0, 8 * i + n, "hash_stage", 0) for n in range(8)],
-                            ),
-                        ]
-                    }
-                )
+                for hi, (op1, vec1, op2, op3, vec3) in enumerate(VECTORIZED_HASH_STAGES):
+                    instructions.append(
+                        {
+                            "valu": [
+                                (
+                                    op1,
+                                    op1r,
+                                    self.scratch[f"acc_{i}"],
+                                    vec1,
+                                ),
+                                (
+                                    op3,
+                                    op3r,
+                                    self.scratch[f"acc_{i}"],
+                                    vec3,
+                                ),
+                            ]
+                        }
+                    )
+                    instructions.append(
+                        {
+                            "valu": [
+                                (
+                                    op2,
+                                    self.scratch[f"acc_{i}"],
+                                    op1r,
+                                    op3r,
+                                ),
+                            ]
+                        }
+                    )
+                    instructions.append(
+                        {
+                            "debug": [
+                                (
+                                    "vcompare",
+                                    self.scratch[f"acc_{i}"],
+                                    [(0, 8 * i + n, "hash_stage", hi) for n in range(8)],
+                                ),
+                            ]
+                        }
+                    )
 
-                # vswitch on the hashed value.
+                # TODO: vswitch on the hashed value parity.
 
-                # Load the next node value.
+
+                # TODO: Load the next node values.
                 pass
 
             # TODO: Do more than one round.
             break
+
+        # TODO: Store the final answers back into memory.
 
         self.instrs.extend(instructions)
         # Required to match with the yield in reference_kernel2
