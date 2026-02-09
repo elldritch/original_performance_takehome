@@ -292,6 +292,7 @@ class KernelBuilder:
             ("+", hash_stage4_v, "+", "<<", three_v),
             ("^", hash_stage5_v, "^", ">>", sixteen_v),
         ]
+        parity_v = self.alloc_scratch("parity_v", 8)
         for r in range(rounds):
             # For each section...
             for i in range(16):
@@ -310,7 +311,9 @@ class KernelBuilder:
                 )
 
                 # Calculate the hash using SIMD.
-                for hi, (op1, vec1, op2, op3, vec3) in enumerate(VECTORIZED_HASH_STAGES):
+                for hi, (op1, vec1, op2, op3, vec3) in enumerate(
+                    VECTORIZED_HASH_STAGES
+                ):
                     instructions.append(
                         {
                             "valu": [
@@ -347,14 +350,40 @@ class KernelBuilder:
                                 (
                                     "vcompare",
                                     self.scratch[f"acc_{i}"],
-                                    [(0, 8 * i + n, "hash_stage", hi) for n in range(8)],
+                                    [
+                                        (0, 8 * i + n, "hash_stage", hi)
+                                        for n in range(8)
+                                    ],
                                 ),
                             ]
                         }
                     )
+                instructions.append(
+                    {
+                        "debug": [
+                            (
+                                "vcompare",
+                                self.scratch[f"acc_{i}"],
+                                [(0, 8 * i + n, "hashed_val") for n in range(8)],
+                            ),
+                        ]
+                    }
+                )
 
                 # TODO: vswitch on the hashed value parity.
-
+                instructions.append(
+                    {
+                        "valu": [
+                            (
+                                "%",
+                                parity_v,
+                                self.scratch[f"acc_{i}"],
+                                two,
+                            ),
+                        ]
+                    }
+                )
+                instructions.append()
 
                 # TODO: Load the next node values.
                 pass
